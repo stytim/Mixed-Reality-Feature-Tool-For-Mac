@@ -13,7 +13,9 @@
 #include <archive_entry.h>
 #include <filesystem>
 #include <fcntl.h> 
-#include <algorithm> // For sorting and finding the latest version
+#include <algorithm> // For sorting and finding the latest 
+
+namespace fs = std::filesystem;
 
 std::map<std::string, std::string> downloadedComponents;
 std::vector<std::string> componentNames;
@@ -218,8 +220,8 @@ void extractArchive(const std::string& archiveFile, const std::string& extractPa
 
     while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
         std::string fullPath = extractPath + "/" + archive_entry_pathname(entry);
-        std::filesystem::path path(fullPath);
-        std::filesystem::create_directories(path.parent_path()); // Create directories if they don't exist
+        fs::path path(fullPath);
+        fs::create_directories(path.parent_path()); // Create directories if they don't exist
 
         if (archive_entry_filetype(entry) == AE_IFREG) { // Regular file
             std::ofstream outputFile(fullPath, std::ios::binary);
@@ -252,14 +254,14 @@ void createTgzArchive(const std::string& folderPath, const std::string& tgzFileN
     int fd;
 
     // Extract the directory name from the folder path
-    std::string dirName = std::filesystem::path(folderPath).filename();
+    std::string dirName = fs::path(folderPath).filename();
 
     a = archive_write_new();
     archive_write_add_filter_gzip(a);
     archive_write_set_format_pax_restricted(a);
     archive_write_open_filename(a, tgzFileName.c_str());
 
-    for (const auto & file : std::filesystem::recursive_directory_iterator(folderPath)) {
+    for (const auto & file : fs::recursive_directory_iterator(folderPath)) {
         const std::string filePath = file.path().string();
         // Include the directory name in the path inside the archive
         const std::string name = dirName + "/" + filePath.substr(folderPath.length() + 1);
@@ -292,15 +294,15 @@ void createTgzArchive(const std::string& folderPath, const std::string& tgzFileN
 void extractAndRepackage(const std::string& downloadedFile, const std::string& version) {
     // Step 1: Extract the downloaded .tar.gz file
     std::string extractPath = "./extracted"; // Temporary directory for extraction
-    std::filesystem::create_directories(extractPath);
+    fs::create_directories(extractPath);
     // Function to extract files goes here (implement using libarchive)
     extractArchive(downloadedFile, extractPath);
 
     // Step 2: Locate the com.microsoft.mrtk.graphicstools.unity subfolder
     std::string subfolderPath = extractPath + "/MixedReality-GraphicsTools-Unity-" + version + "/com.microsoft.mrtk.graphicstools.unity";
     std::string packagePath = "./package";
-    if (std::filesystem::exists(subfolderPath)) {
-        std::filesystem::rename(subfolderPath, packagePath);
+    if (fs::exists(subfolderPath)) {
+        fs::rename(subfolderPath, packagePath);
     }
 
     // Step 3: Archive the package folder as .tgz
@@ -309,12 +311,12 @@ void extractAndRepackage(const std::string& downloadedFile, const std::string& v
     createTgzArchive(packagePath, tgzFileName); 
 
     // Cleanup: Remove the extracted directory
-    std::filesystem::remove_all(extractPath);
+    fs::remove_all(extractPath);
 
-    std::filesystem::remove_all(packagePath);
+    fs::remove_all(packagePath);
 
     // Cleanup: Remove the downloaded .tgz file
-    std::filesystem::remove(downloadedFile);
+    fs::remove(downloadedFile);
 }
 
 // Function to download and process dependencies
@@ -330,7 +332,7 @@ void downloadAndProcessDependencies(
             return; // Existing version is newer or the same, no need to download
         } else {
             // Delete the old .tgz file
-            std::filesystem::remove("org.mixedrealitytoolkit." + component + "-" + downloadedComponents[component] + ".tgz");
+            fs::remove("org.mixedrealitytoolkit." + component + "-" + downloadedComponents[component] + ".tgz");
 
         }
     }
@@ -352,7 +354,7 @@ void downloadAndProcessDependencies(
                 }
                 else if (dependency.first.starts_with("com.microsoft.mrtk.graphicstools.unity"))
                 {
-                    if (std::filesystem::exists("com.microsoft.mrtk.graphicstools.unity-" + dependency.second + ".tgz")) {
+                    if (fs::exists("com.microsoft.mrtk.graphicstools.unity-" + dependency.second + ".tgz")) {
                         std::cout << "Dependency already downloaded: " << dependency.first << std::endl;
                         continue;
                     }
@@ -375,7 +377,30 @@ void downloadAndProcessDependencies(
     }
 }
 
-int main() {
+bool isValidUnityProject(const fs::path& path) {
+    return fs::exists(path / "Assets") && fs::exists(path / "Packages") && fs::exists(path / "ProjectSettings");
+}
+
+
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        std::cout << "Please drag your Unity project folder into the terminal." << std::endl;
+        return 1;
+    }
+
+    fs::path projectPath = argv[1];
+
+    if (!fs::exists(projectPath) || !fs::is_directory(projectPath)) {
+        std::cout << "The provided path is not valid or does not exist." << std::endl;
+        return 1;
+    }
+
+    if (!isValidUnityProject(projectPath)) {
+        std::cout << "The folder is not a valid Unity project." << std::endl;
+        return 1;
+    }
+
+
     std::string github_api_url = "https://api.github.com/repos/MixedRealityToolkit/MixedRealityToolkit-Unity/releases";
     std::string jsonResponse = httpGet(github_api_url);
 
@@ -409,20 +434,25 @@ int main() {
         }
 
         // User selection by index
-        std::cout << "Enter the index numbers of the components to download (type -1 to finish): ";
+        std::cout << "Enter the index numbers of the components to download (separated by space, press Enter to finish): " << std::endl;
         std::vector<int> selectedIndices;
+        std::string inputLine;
+        std::getline(std::cin, inputLine);
+        std::stringstream ss(inputLine);
         int inputIndex;
-        while (std::cin >> inputIndex && inputIndex != -1) {
+
+        while (ss >> inputIndex) {
             if (inputIndex >= 0 && inputIndex < componentNames.size()) {
                 selectedIndices.push_back(inputIndex);
             } else {
-                std::cout << "Invalid index. Please try again: ";
+                std::cout << "Invalid index: " << inputIndex << ". Skipping.\n";
             }
         }
 
         // Processing each selected component
         for (int idx : selectedIndices) {
             std::string component = componentNames[idx];
+            std::cout << "Selected component: " << component << std::endl;
             // std::cout << "Enter version for " << component << " (or l for the latest version): ";
             std::string version = "l";
             // std::cin >> version;
@@ -455,12 +485,50 @@ int main() {
         }
 
         // Find all tgz files and move them to a folder
-        std::filesystem::create_directories("MixedReality");
-        for (const auto &file : std::filesystem::directory_iterator(".")) {
+        fs::create_directories("MixedReality");
+        for (const auto &file : fs::directory_iterator(".")) {
             if (file.path().extension() == ".tgz") {
-                std::filesystem::rename(file.path(), "MixedReality/" + file.path().filename().string());
+                fs::rename(file.path(), "MixedReality/" + file.path().filename().string());
             }
         }
+
+        fs::path destination = projectPath / "Packages" / "MixedReality";
+        // Check if MixedReality folder already exists in Packages and remove it if it does
+        if (fs::exists(destination)) {
+            fs::remove_all(destination);
+        }
+        fs::create_directories(destination);
+        fs::rename("MixedReality", destination);
+
+        // Locate and read manifest.json
+        fs::path manifestPath = projectPath / "Packages" / "manifest.json";
+
+        if (!fs::exists(manifestPath)) {
+            std::cerr << "manifest.json not found in Packages folder." << std::endl;
+            return 1;
+        }
+
+        std::ifstream manifestFile(manifestPath);
+        nlohmann::json manifestJson;
+        manifestFile >> manifestJson;
+        manifestFile.close();
+
+        // Add new dependencies to the manifest.json
+        for (const auto &file : fs::directory_iterator(destination)) {
+            if (file.path().extension() == ".tgz") {
+                std::string filename = file.path().filename().string();
+                std::string componentname = filename.substr(0, filename.find('-'));
+                std::string dependencyPath = "file:MixedReality/" + filename;
+                manifestJson["dependencies"][componentname] = dependencyPath;
+            }
+        }
+
+        // Write the updated manifest.json back to the file
+        std::ofstream outFile(manifestPath);
+        outFile << manifestJson.dump(4);
+        outFile.close();
+
+        std::cout << "Updated manifest.json with new dependencies." << std::endl;
 
     }
     catch (const std::exception &e) {
