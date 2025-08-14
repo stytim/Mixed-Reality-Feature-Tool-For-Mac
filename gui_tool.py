@@ -60,7 +60,7 @@ class ProjectSelectFrame(ctk.CTkFrame):
         self.app = master
         self.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(self, text="Select project", font=ctk.CTkFont(size=24, weight="bold")).grid(row=0, column=0, columnspan=3, padx=20, pady=(20, 10), sticky="w")
-        self.path_entry = ctk.CTkEntry(self, placeholder_text="C:/Path/To/Your/UnityProject")
+        self.path_entry = ctk.CTkEntry(self, placeholder_text="/Users/username/UnityProject")
         self.path_entry.grid(row=2, column=1, padx=5, pady=20, sticky="ew")
         ctk.CTkButton(self, text="...", width=40, command=self.browse_for_project).grid(row=2, column=2, padx=(5, 20), pady=20)
         self.version_label_value = ctk.CTkLabel(self, text="<None>", anchor="w")
