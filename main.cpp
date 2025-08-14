@@ -29,15 +29,14 @@ struct SelectablePackage {
 // ---- END: New Package Structures ----
 
 // Forward declarations
-void downloadAndProcessDependencies(
+void resolveDependencies(
     const std::string& component,
     const std::string& version,
     const nlohmann::json& jsonParsed,
     std::set<std::string>& processedComponents,
-    std::map<std::string, std::string>& downloadedComponents,
-    const std::map<std::string, std::function<void(const std::string&, const std::string&, std::map<std::string, std::string>&)>>& customHandlers);
+    std::map<std::string, std::string>& requiredPackages);
 
-std::string downloadFile(const std::string& url);
+std::string downloadFile(const std::string& url, const std::string& outputPath = "");
 void extractAndRepackage(const std::string& downloadedFile, const std::string& version);
 
 // A more robust semantic versioning comparison function.
@@ -181,9 +180,10 @@ CURLcode performCurlRequest(const std::string& url, void* write_data, size_t (*w
     return res;
 }
 
-std::string downloadFile(const std::string& url) {
-    fs::path urlPath(url);
-    std::string filename = urlPath.filename().string();
+// Overloaded downloadFile to allow specifying an output path
+std::string downloadFile(const std::string& url, const std::string& outputPath) {
+    std::string filename = outputPath.empty() ? fs::path(url).filename().string() : outputPath;
+
     if (filename.empty()) {
         std::cerr << "Error: Could not extract file name from URL." << std::endl;
         return "";
@@ -196,6 +196,7 @@ std::string downloadFile(const std::string& url) {
     if (performCurlRequest(url, &outputFile, WriteDataCallback) != CURLE_OK) return "";
     return filename;
 }
+
 
 std::string httpGet(const std::string& url) {
     std::string readBuffer;
@@ -334,38 +335,53 @@ std::string findDownloadUrlForComponent(const std::string& component_name, const
     return "";
 }
 
-void downloadAndProcessDependencies(
+void resolveDependencies(
     const std::string& component,
     const std::string& version,
     const nlohmann::json& jsonParsed,
     std::set<std::string>& processedComponents,
-    std::map<std::string, std::string>& downloadedComponents,
-    const std::map<std::string, std::function<void(const std::string&, const std::string&, std::map<std::string, std::string>&)>>& customHandlers) {
+    std::map<std::string, std::string>& requiredPackages) {
 
     const std::string componentKey = component + "-" + version;
-    if (processedComponents.count(componentKey)) return;
-    if (downloadedComponents.count(component) && !isNewerVersion(downloadedComponents[component], version)) return;
+    if (processedComponents.count(componentKey)) {
+        return; // Already processed this exact version, avoid cycles.
+    }
+
+    if (requiredPackages.count(component) && !isNewerVersion(requiredPackages[component], version)) {
+        return;
+    }
+    
+    std::cout << "  Resolving " << component << " v" << version << std::endl;
+    requiredPackages[component] = version;
+    processedComponents.insert(componentKey);
+
     std::string downloadUrl = findDownloadUrlForComponent(component, version, jsonParsed);
     if (downloadUrl.empty()) {
-        std::cerr << "Component not found: " << component << " version " << version << std::endl;
+        if (component != "com.microsoft.mrtk.graphicstools.unity") {
+             // This warning is no longer needed as we expect some URLs to be missing (e.g. for graphics tools)
+        }
         return;
     }
-    std::cout << "Downloading " << component << " v" << version << "..." << std::endl;
-    std::string downloadedFile = downloadFile(downloadUrl);
-    if (downloadedFile.empty()) {
-        std::cerr << "Failed to download " << component << std::endl;
+
+    std::string tempFile = downloadFile(downloadUrl, "temp_dependency_check.tgz");
+    if (tempFile.empty()) {
+        std::cerr << "  Failed to download " << component << " for dependency check." << std::endl;
         return;
     }
-    downloadedComponents[component] = version;
-    processedComponents.insert(componentKey);
-    auto dependencies = getDependencies(downloadedFile);
+
+    auto dependencies = getDependencies(tempFile);
+    fs::remove(tempFile);
+
     for (const auto& [depName, depVersion] : dependencies) {
-        std::cout << "  Found dependency: " << depName << " v" << depVersion << std::endl;
-        if (customHandlers.count(depName)) {
-            customHandlers.at(depName)(depName, depVersion, downloadedComponents);
-        } else if (depName.starts_with("org.mixedrealitytoolkit")) {
+        if (depName.starts_with("com.unity.")) {
+            continue; // Skip to the next dependency
+        }
+
+        if (depName.starts_with("org.mixedrealitytoolkit")) {
             std::string depComponent = depName.substr(24);
-            downloadAndProcessDependencies(depComponent, depVersion, jsonParsed, processedComponents, downloadedComponents, customHandlers);
+            resolveDependencies(depComponent, depVersion, jsonParsed, processedComponents, requiredPackages);
+        } else {
+            resolveDependencies(depName, depVersion, jsonParsed, processedComponents, requiredPackages);
         }
     }
 }
@@ -464,43 +480,52 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
-        std::map<std::string, std::function<void(const std::string&, const std::string&, std::map<std::string, std::string>&)>> customHandlers;
-        customHandlers["com.microsoft.mrtk.graphicstools.unity"] = 
-            [](const std::string& name, const std::string& version, std::map<std::string, std::string>& downloaded) {
-                const std::string tgzName = "com.microsoft.mrtk.graphicstools.unity-" + version + ".tgz";
-                if (fs::exists(tgzName)) {
-                    std::cout << "  Dependency already present: " << name << std::endl;
-                    return;
-                }
-                std::cout << "  Handling special dependency: " << name << " v" << version << std::endl;
-                const std::string url = "https://github.com/microsoft/MixedReality-GraphicsTools-Unity/archive/refs/tags/v" + version + ".tar.gz";
-                std::string downloadedDep = downloadFile(url);
-                if (!downloadedDep.empty()) {
-                    downloaded[name] = version;
-                    extractAndRepackage(downloadedDep, version);
-                }
-            };
-        
-        std::set<std::string> processedComponents;
-        std::map<std::string, std::string> downloadedComponents;
+        // ---- PHASE 1: RESOLVE ALL DEPENDENCIES ----
+        std::cout << "\n--- Phase 1: Resolving all dependencies... ---\n";
+        std::map<std::string, std::string> requiredPackages;
+        std::set<std::string> processedComponents; // Tracks component-version pairs to avoid cycles
         std::set<std::string> selectedOpenXRPackages;
-        
+
         for (int idx : selectedIndices) {
             const auto& pkg = allPackages.at(idx);
             if (pkg.type == PackageType::MRTK) {
                 auto& versions = mrtk_components.at(pkg.identifier);
-                std::sort(versions.begin(), versions.end(), [](const auto& a, const auto& b) {
-                    return isNewerVersion(b, a);
-                });
-                const std::string& latestVersion = versions.front();
-                std::cout << "\nProcessing " << pkg.displayName << " (latest: v" << latestVersion << ")" << std::endl;
-                downloadAndProcessDependencies(pkg.identifier, latestVersion, jsonParsed, processedComponents, downloadedComponents, customHandlers);
+                // Sort versions to find the latest one
+                std::sort(versions.begin(), versions.end(), isNewerVersion);
+                const std::string& latestVersion = versions.back();
+                
+                std::cout << "Processing selected package: " << pkg.displayName << " (latest: v" << latestVersion << ")" << std::endl;
+                resolveDependencies(pkg.identifier, latestVersion, jsonParsed, processedComponents, requiredPackages);
+
             } else if (pkg.type == PackageType::OpenXR) {
-                std::cout << "\nQueueing " << pkg.displayName << " for manifest update." << std::endl;
+                std::cout << "Queueing " << pkg.displayName << " for manifest update." << std::endl;
                 selectedOpenXRPackages.insert(pkg.identifier);
             }
         }
         
+        // ---- PHASE 2: DOWNLOAD FINAL PACKAGES ----
+        std::cout << "\n--- Phase 2: Downloading required packages... ---\n";
+        for (const auto& [name, version] : requiredPackages) {
+             if (name == "com.microsoft.mrtk.graphicstools.unity") {
+                // Special handling for graphics tools
+                std::cout << "Downloading and repackaging special dependency: " << name << " v" << version << "..." << std::endl;
+                const std::string url = "https://github.com/microsoft/MixedReality-GraphicsTools-Unity/archive/refs/tags/v" + version + ".tar.gz";
+                std::string downloadedDep = downloadFile(url);
+                if (!downloadedDep.empty()) {
+                    extractAndRepackage(downloadedDep, version);
+                }
+            } else {
+                // Standard MRTK package download
+                std::cout << "Downloading " << name << " v" << version << "..." << std::endl;
+                std::string downloadUrl = findDownloadUrlForComponent(name, version, jsonParsed);
+                if (!downloadUrl.empty()) {
+                    downloadFile(downloadUrl);
+                } else {
+                    std::cerr << "ERROR: Could not find final download URL for " << name << " v" << version << ". Skipping." << std::endl;
+                }
+            }
+        }
+
         const fs::path mixedRealityDir = "MixedReality";
         fs::create_directories(mixedRealityDir);
         for (const auto& file : fs::directory_iterator(".")) {
@@ -532,7 +557,8 @@ int main(int argc, char* argv[]) {
             for (const auto& file : fs::directory_iterator(installedMixedRealityDir)) {
                 if (file.path().extension() == ".tgz") {
                     std::string filename = file.path().filename().string();
-                    std::string componentName = filename.substr(0, filename.find_last_of('-'));
+                    size_t last_dash = filename.find_last_of('-');
+                    std::string componentName = filename.substr(0, last_dash);
                     std::string dependencyPath = "file:MixedReality/" + filename;
                     manifestJson["dependencies"][componentName] = dependencyPath;
                 }
