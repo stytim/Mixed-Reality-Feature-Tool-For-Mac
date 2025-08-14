@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 # Set your project name
-project(MRTK_Component_Fetcher)
+project(MRTKFeatureTool-CPP)
 
 # Specify the C++ standard
 set(CMAKE_CXX_STANDARD 20)
@@ -18,13 +18,33 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     set(LibArchive_INCLUDE_DIR "${LIBARCHIVE_PREFIX}/include")
 endif()
 # Find the required libraries
+find_package(wxWidgets REQUIRED)
 find_package(CURL REQUIRED)
 find_package(LibArchive REQUIRED)
 
-# Add the executable
-add_executable(mrfeature_tool main.cpp)
+include(${wxWidgets_USE_FILE})
+include_directories(${LibArchive_INCLUDE_DIRS})
 
-# Link the libraries to your executable
-target_link_libraries(mrfeature_tool PRIVATE CURL::libcurl ${LibArchive_LIBRARIES})
+# This creates a library named 'mrtk_core' that both executables can use.
+add_library(mrtk_core core_logic.cpp core_logic.h)
+target_include_directories(mrtk_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mrtk_core
+    PUBLIC
+    CURL::libcurl
+    ${LibArchive_LIBRARIES}
+)
 
-target_include_directories(mrfeature_tool PRIVATE ${LibArchive_INCLUDE_DIRS})
+# --- CLI Executable ---
+add_executable(mrtk_cli cli_main.cpp)
+target_link_libraries(mrtk_cli PRIVATE mrtk_core)
+
+# # # --- GUI Executable ---
+add_executable(mrtk_gui gui_main.cpp)
+target_include_directories(mrtk_gui PRIVATE ${wxWidgets_INCLUDE_DIRS})
+target_link_libraries(mrtk_gui
+    PRIVATE
+    mrtk_core
+    ${wxWidgets_LIBRARIES}
+)
+
+
