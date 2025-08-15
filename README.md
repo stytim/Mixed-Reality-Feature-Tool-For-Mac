@@ -3,9 +3,9 @@
 ## Overview
 At the moment, if you want to use Mixed Reality Toolkit 3 (MRTK 3) for Unity on a Mac, you would have to download the Mixed Reality Feature Tool on a Windows machine to configure the Unity project. However, MRTK is a cross-platform Unity library, so there is no reason why someone using a Mac should have to use a Windows machine just to configure the Unity project with the Mixed Reality Feature Tool.
 
-The Mixed Reality Feature Tool for Mac is a command-line tool that allows developers to download the necessary MRTK3 components on macOS. 
+The Mixed Reality Feature Tool for Mac allows developers to configure Unity projects for MRTK3 by downloading and setting up the necessary components on macOS.
 
-This tool is provided as a CLI tool that runs in the terminal and a GUI tool in both C++ and Python versions.
+Both CLI (command-line) and GUI (graphical user interface) tools are available, implemented in both C++ and Python versions.
 
 ## C++ Version
 
