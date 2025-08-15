@@ -118,12 +118,11 @@ void MRTKToolCore::resolveDependencies(const std::vector<int>& selectedIndices) 
     std::cout << "\n--- Phase 1: Resolving all dependencies... ---\n";
     std::set<std::string> processedComponents;
 
-    // <<< NEW: Clear previous results
     requiredMrtkPackages.clear();
     resolvedUserSelections.clear();
     resolvedDependencies.clear();
+    requiredOpenXrPackages.clear();
 
-    // First, identify the packages the user explicitly selected
     for (int idx : selectedIndices) {
         const auto& pkg = allPackages.at(idx);
         if (pkg.type == PackageType::MRTK) {
@@ -132,17 +131,25 @@ void MRTKToolCore::resolveDependencies(const std::vector<int>& selectedIndices) 
             const std::string& latestVersion = versions.back();
             resolvedUserSelections[pkg.identifier] = latestVersion;
         } else if (pkg.type == PackageType::OpenXR) {
+            // Add to the set for the final manifest update step
             requiredOpenXrPackages.insert(pkg.identifier);
+            
+            // <<< FIX: Also add to the map that the UI panel displays.
+            // Use the display name as the key and a placeholder for the version.
+            resolvedUserSelections[pkg.displayName] = "(OpenXR Runtime)";
         }
     }
 
-    // Now, resolve dependencies for all user-selected packages
+    // Now, resolve dependencies for all user-selected MRTK packages
     for (const auto& [name, version] : resolvedUserSelections) {
+        // Skip OpenXR packages in this part as they don't have MRTK dependencies
+        if (version == "(OpenXR Runtime)") {
+            continue;
+        }
          std::cout << "Processing selected package: " << name << " (latest: v" << version << ")" << std::endl;
          resolveDependenciesRecursive(name, version, processedComponents);
     }
     
-    // <<< NEW: Differentiate dependencies from direct selections
     for (const auto& [name, version] : requiredMrtkPackages) {
         if (resolvedUserSelections.find(name) == resolvedUserSelections.end()) {
             resolvedDependencies[name] = version;
