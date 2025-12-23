@@ -37,3 +37,7 @@ build/*
 .vscode/*
 .DS_Store
 *.pyc
+dist/*
+*.spec
+*.icns
+*.dmg

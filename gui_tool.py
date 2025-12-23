@@ -4,8 +4,17 @@ import customtkinter as ctk
 from tkinter import filedialog
 import threading
 import queue
+import os
+import platform
 
 import core_logic as core
+
+# Ensure we are writing to a safe, user-accessible directory
+if platform.system() == "Darwin": # Mac specific
+    # Create a folder in Downloads to store the temp files and downloads
+    download_dir = pathlib.Path.home() / "Downloads" / "MRTK_Tool"
+    download_dir.mkdir(parents=True, exist_ok=True)
+    os.chdir(download_dir) # Change current working directory to this folder
 
 # --- Application Configuration ---
 ctk.set_appearance_mode("dark")
