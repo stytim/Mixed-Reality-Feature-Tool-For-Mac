@@ -47,4 +47,13 @@ target_link_libraries(mrtk_gui
     ${wxWidgets_LIBRARIES}
 )
 
+# --- Tests (opt-in) ---
+option(BUILD_TESTS "Build regression tests for core logic" OFF)
+if(BUILD_TESTS)
+    add_executable(mrtk_tests tests/test_core_logic.cpp)
+    target_link_libraries(mrtk_tests PRIVATE mrtk_core)
+    enable_testing()
+    add_test(NAME core COMMAND mrtk_tests)
+endif()
+
 

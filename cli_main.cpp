@@ -4,8 +4,16 @@
 #include <sstream>
 #include <vector>
 #include <filesystem>
+#include <curl/curl.h>
 
 namespace fs = std::filesystem;
+
+namespace {
+struct CurlGlobal {
+    CurlGlobal() { curl_global_init(CURL_GLOBAL_DEFAULT); }
+    ~CurlGlobal() { curl_global_cleanup(); }
+};
+} // namespace
 
 void display_menu(const std::vector<SelectablePackage>& allPackages) {
     int currentIndex = 0;
@@ -24,6 +32,8 @@ void display_menu(const std::vector<SelectablePackage>& allPackages) {
 }
 
 int main(int argc, char* argv[]) {
+    CurlGlobal curlInit;
+
     if (argc < 2) {
         std::cout << "Usage: Please drag your Unity project folder onto the executable." << std::endl;
         std::cout << "Press enter to exit.";

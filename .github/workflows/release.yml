@@ -1,0 +1,201 @@
+name: Release
+
+# Triggers:
+#   1. Push a tag like `v1.0.0` — automatic release.
+#   2. Manual run via the "Run workflow" button (no release created).
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release-macos:
+    name: Build macOS DMGs and publish release
+    runs-on: macos-latest
+    permissions:
+      contents: write   # Required by softprops/action-gh-release to create the release.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-$(date +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Homebrew build dependencies
+        run: |
+          brew update
+          brew install wxwidgets libarchive dylibbundler
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller customtkinter requests packaging pytest
+
+      # ---------------- C++ build + tests ----------------
+      - name: Configure CMake
+        run: cmake -S . -B build -DBUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build C++ targets
+        run: cmake --build build -j
+
+      - name: Run C++ regression tests
+        run: ./build/mrtk_tests
+
+      - name: Run Python regression tests
+        run: python -m pytest tests/test_core_logic.py -v
+
+      # ---------------- C++ .app bundle ----------------
+      - name: Assemble C++ .app bundle
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          APP="dist/cpp/MRTKFeatureTool.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/libs"
+          cp build/mrtk_gui "$APP/Contents/MacOS/MRTKFeatureTool"
+          cp build/mrtk_cli "dist/cpp/mrtk_cli"
+          if [ -f mrtk_icon.icns ]; then
+            cp mrtk_icon.icns "$APP/Contents/Resources/AppIcon.icns"
+          fi
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>MRTKFeatureTool</string>
+            <key>CFBundleIdentifier</key><string>com.mrtk.featuretool.cpp</string>
+            <key>CFBundleName</key><string>MRTKFeatureTool</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>CFBundleIconFile</key><string>AppIcon</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          # Bundle non-system dylibs (Homebrew wxWidgets, libarchive). dylibbundler
+          # rewrites the install names to @executable_path-relative so the .app is
+          # self-contained on a clean Mac.
+          dylibbundler -od -b -of \
+            -x "$APP/Contents/MacOS/MRTKFeatureTool" \
+            -d "$APP/Contents/libs/" \
+            -p "@executable_path/../libs/"
+          # CLI uses libcurl/libarchive — fix it up too, dylibs in adjacent app/libs.
+          mkdir -p dist/cpp/libs
+          dylibbundler -od -b -of \
+            -x dist/cpp/mrtk_cli \
+            -d dist/cpp/libs/ \
+            -p "@executable_path/libs/" || true
+
+      - name: Create C++ DMG
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          mkdir -p artifacts
+          # Stage everything that should land in the DMG.
+          STAGE=$(mktemp -d)
+          cp -R dist/cpp/MRTKFeatureTool.app "$STAGE/"
+          cp dist/cpp/mrtk_cli "$STAGE/"
+          [ -d dist/cpp/libs ] && cp -R dist/cpp/libs "$STAGE/" || true
+          ln -sf /Applications "$STAGE/Applications"
+          hdiutil create -volname "MRTKFeatureTool-CPP" \
+            -srcfolder "$STAGE" \
+            -ov -format UDZO \
+            "artifacts/MRTKFeatureTool-CPP-${VERSION}.dmg"
+
+      # ---------------- Python .app via PyInstaller ----------------
+      - name: Write portable PyInstaller spec
+        run: |
+          cat > MRTKFeatureTool-CI.spec <<'SPEC'
+          # -*- mode: python ; coding: utf-8 -*-
+          # Auto-generated for CI. Finds customtkinter via importlib instead of
+          # hardcoding a conda path so the build is portable across machines.
+          import os
+          import customtkinter
+
+          ctk_path = os.path.dirname(customtkinter.__file__)
+          icon = 'mrtk_icon.icns' if os.path.exists('mrtk_icon.icns') else None
+
+          a = Analysis(
+              ['gui_tool.py'],
+              pathex=[],
+              binaries=[],
+              datas=[(ctk_path, 'customtkinter/')],
+              hiddenimports=[],
+              hookspath=[],
+              hooksconfig={},
+              runtime_hooks=[],
+              excludes=[],
+              noarchive=False,
+              optimize=0,
+          )
+          pyz = PYZ(a.pure)
+          exe = EXE(
+              pyz, a.scripts, a.binaries, a.datas, [],
+              name='MRTKFeatureTool',
+              debug=False,
+              bootloader_ignore_signals=False,
+              strip=False,
+              upx=False,
+              upx_exclude=[],
+              runtime_tmpdir=None,
+              console=False,
+              disable_windowed_traceback=False,
+              argv_emulation=False,
+              target_arch=None,
+              codesign_identity=None,
+              entitlements_file=None,
+              icon=icon,
+          )
+          app = BUNDLE(
+              exe,
+              name='MRTKFeatureTool.app',
+              icon=icon,
+              bundle_identifier='com.mrtk.featuretool.python',
+          )
+          SPEC
+
+      - name: Build Python .app
+        run: |
+          pyinstaller --clean --noconfirm MRTKFeatureTool-CI.spec
+          ls -la dist/
+
+      - name: Create Python DMG
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          STAGE=$(mktemp -d)
+          cp -R dist/MRTKFeatureTool.app "$STAGE/"
+          ln -sf /Applications "$STAGE/Applications"
+          hdiutil create -volname "MRTKFeatureTool-Python" \
+            -srcfolder "$STAGE" \
+            -ov -format UDZO \
+            "artifacts/MRTKFeatureTool-Python-${VERSION}.dmg"
+
+      - name: Upload DMG artifacts (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mrtk-dmgs-${{ steps.ver.outputs.version }}
+          path: artifacts/*.dmg
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.dmg
+          name: ${{ steps.ver.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
