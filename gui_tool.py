@@ -4,17 +4,26 @@ import customtkinter as ctk
 from tkinter import filedialog
 import threading
 import queue
-import os
+import tempfile
 import platform
 
 import core_logic as core
 
-# Ensure we are writing to a safe, user-accessible directory
-if platform.system() == "Darwin": # Mac specific
-    # Create a folder in Downloads to store the temp files and downloads
-    download_dir = pathlib.Path.home() / "Downloads" / "MRTK_Tool"
-    download_dir.mkdir(parents=True, exist_ok=True)
-    os.chdir(download_dir) # Change current working directory to this folder
+
+def _default_work_dir() -> pathlib.Path:
+    """Per-platform scratch dir for downloads and temp tarballs.
+
+    Previously this module ran `os.chdir` into ~/Downloads/MRTK_Tool, which
+    leaked into anything else the process did. Now we just hand the path to
+    core_logic explicitly via a `work_dir` argument.
+    """
+    if platform.system() == "Darwin":
+        path = pathlib.Path.home() / "Downloads" / "MRTK_Tool"
+    else:
+        path = pathlib.Path(tempfile.gettempdir()) / "MRTK_Tool"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
 
 # --- Application Configuration ---
 ctk.set_appearance_mode("dark")
@@ -32,6 +41,7 @@ class App(ctk.CTk):
         self.user_selections: dict = {}
         self.openxr_selections: set = set()
         self.resolved_packages: dict = {}
+        self.work_dir: pathlib.Path = _default_work_dir()
 
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -190,12 +200,30 @@ class ProgressFrame(ctk.CTkFrame):
         self.after(100, self.process_log_queue)
         
     def run_resolve_worker(self):
-        self.app.resolved_packages = core.resolve_dependencies(self.app.user_selections, self.app.mrtk_releases_json, self.update_log)
-        self.app.after(0, self.app.show_confirmation_frame)
-        
+        try:
+            self.app.resolved_packages = core.resolve_dependencies(
+                self.app.user_selections,
+                self.app.mrtk_releases_json,
+                self.update_log,
+                work_dir=self.app.work_dir,
+            )
+            self.app.after(0, self.app.show_confirmation_frame)
+        except Exception as e:
+            self.update_log(f"Resolve failed: {e}")
+
     def run_import_worker(self):
-        core.download_and_apply_packages(self.app.project_path, self.app.resolved_packages, self.app.mrtk_releases_json, self.app.openxr_selections, self.update_log)
-        self.app.after(0, self.app.show_completion_frame)
+        try:
+            core.download_and_apply_packages(
+                self.app.project_path,
+                self.app.resolved_packages,
+                self.app.mrtk_releases_json,
+                self.app.openxr_selections,
+                self.update_log,
+                work_dir=self.app.work_dir,
+            )
+            self.app.after(0, self.app.show_completion_frame)
+        except Exception as e:
+            self.update_log(f"Import failed: {e}")
 
 class CompletionFrame(ctk.CTkFrame):
     def __init__(self, master, **kwargs):

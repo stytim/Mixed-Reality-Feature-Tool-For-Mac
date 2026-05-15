@@ -37,6 +37,8 @@ build/*
 .vscode/*
 .DS_Store
 *.pyc
+__pycache__/
+.pytest_cache/
 dist/*
 *.spec
 *.icns
