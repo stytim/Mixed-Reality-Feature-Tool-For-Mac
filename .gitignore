@@ -41,5 +41,4 @@ __pycache__/
 .pytest_cache/
 dist/*
 *.spec
-*.icns
 *.dmg
